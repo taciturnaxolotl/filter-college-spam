@@ -1,0 +1,4 @@
+.env
+.crush/
+node_modules/
+*.log

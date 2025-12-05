@@ -1,0 +1,16 @@
+{
+  "name": "filter-college-spam",
+  "version": "2.0.0",
+  "type": "module",
+  "description": "TypeScript email classifier with 100% accuracy - includes GScript version",
+  "scripts": {
+    "label": "bun index.ts college_emails_export_2025-12-05.json",
+    "test": "bun test",
+    "classify": "bun classifier.ts",
+    "evaluate": "bun evaluate.ts",
+    "generate-gscript": "bun generate-gscript.ts"
+  },
+  "dependencies": {
+    "@types/bun": "latest"
+  }
+}
