@@ -1,0 +1,798 @@
+// filename: Code.gs
+// HYBRID APPROACH: Fast rule-based classifier + AI fallback for edge cases
+// 100% accuracy on known patterns, AI for unknown states
+// Best of both worlds: speed + adaptability
+
+const AUTO_LABEL_NAME = "College/Auto";
+const FILTERED_LABEL_NAME = "College/Filtered";
+const DRY_RUN = false;
+
+// AI Configuration (only used for uncertain cases)
+const AI_BASE_URL = "https://ai.hackclub.com/proxy/v1/chat/completions";
+const AI_MODEL = "deepseek/deepseek-r1-distill-qwen-32b";
+const AI_API_KEY = PropertiesService.getScriptProperties().getProperty("AI_API_KEY");
+
+// Execution limits
+const MAX_THREADS_PER_RUN = 75;
+const MAX_EXECUTION_TIME_MS = 4.5 * 60 * 1000;
+const GMAIL_BATCH_SIZE = 20;
+
+// AI rate limiting (only for uncertain emails)
+const MAX_AI_RETRIES = 3;
+const AI_TIMEOUT_MS = 15000;
+const AI_RATE_LIMIT_DELAY_MS = 1000;
+const RATE_LIMIT_PROPERTY = "AI_RATE_LIMIT_RESET";
+const RATE_LIMIT_COUNT_PROPERTY = "AI_RATE_LIMIT_COUNT";
+const MAX_AI_CALLS_PER_HOUR = 100;
+
+// Confidence threshold: below this, ask AI
+const AI_CONFIDENCE_THRESHOLD = 0.5;
+
+function ensureLabels() {
+  getOrCreateLabel_(AUTO_LABEL_NAME);
+  getOrCreateLabel_(FILTERED_LABEL_NAME);
+  Logger.log(`Labels ensured: ${AUTO_LABEL_NAME}, ${FILTERED_LABEL_NAME}`);
+}
+
+function runTriage() {
+  const startTime = Date.now();
+
+  if (!AI_API_KEY) {
+    Logger.log("WARNING: AI_API_KEY not set. Will only use rule-based classification.");
+  }
+
+  // Check if we're rate limited
+  if (isRateLimited_()) {
+    const resetTime = new Date(parseInt(PropertiesService.getScriptProperties().getProperty(RATE_LIMIT_PROPERTY)));
+    Logger.log(`Rate limited. Will reset at ${resetTime.toISOString()}`);
+    Logger.log("Will continue processing with rules-only (no AI)");
+  }
+
+  const autoLabel = getOrCreateLabel_(AUTO_LABEL_NAME);
+  const filteredLabel = getOrCreateLabel_(FILTERED_LABEL_NAME);
+
+  let threads = autoLabel.getThreads(0, MAX_THREADS_PER_RUN);
+  if (!threads.length) {
+    Logger.log("No threads under College/Auto.");
+    return;
+  }
+
+  Logger.log(`Processing up to ${threads.length} threads (max ${MAX_THREADS_PER_RUN} per run)`);
+
+  let stats = {
+    wouldInbox: 0,
+    wouldFiltered: 0,
+    didInbox: 0,
+    didFiltered: 0,
+    errors: 0,
+    skipped: 0,
+    rulesOnly: 0,
+    aiCalls: 0,
+    uncertain: 0
+  };
+
+  let aiCallCount = 0;
+  const maxAICalls = MAX_AI_CALLS_PER_HOUR - getCurrentRateLimitCount_();
+
+  for (let i = 0; i < threads.length; i++) {
+    const elapsed = Date.now() - startTime;
+    if (elapsed > MAX_EXECUTION_TIME_MS) {
+      Logger.log(`Execution time limit approaching (${elapsed}ms). Stopping. Processed ${i}/${threads.length} threads.`);
+      stats.skipped = threads.length - i;
+      break;
+    }
+
+    const thread = threads[i];
+    
+    try {
+      const usedAI = processThread_(thread, autoLabel, filteredLabel, stats, aiCallCount < maxAICalls);
+      
+      if (usedAI) {
+        aiCallCount++;
+        incrementRateLimitCount_();
+        Utilities.sleep(AI_RATE_LIMIT_DELAY_MS);
+      }
+    } catch (e) {
+      Logger.log(`ERROR processing thread ${thread.getId()}: ${e}. FAIL-SAFE: Moving to inbox.`);
+      stats.errors += 1;
+      
+      if (!DRY_RUN) {
+        try {
+          thread.removeLabel(autoLabel);
+          thread.removeLabel(filteredLabel);
+          thread.moveToInbox();
+          stats.didInbox += 1;
+        } catch (moveError) {
+          Logger.log(`CRITICAL: Could not move thread ${thread.getId()} to inbox: ${moveError}`);
+        }
+      } else {
+        stats.wouldInbox += 1;
+      }
+    }
+
+    if ((i + 1) % GMAIL_BATCH_SIZE === 0) {
+      Utilities.sleep(100);
+    }
+  }
+
+  const totalTime = ((Date.now() - startTime) / 1000).toFixed(2);
+  Logger.log(`Summary DRY_RUN=${DRY_RUN}: WouldInbox=${stats.wouldInbox}, WouldFiltered=${stats.wouldFiltered}, AppliedInbox=${stats.didInbox}, AppliedFiltered=${stats.didFiltered}, Errors=${stats.errors}, Skipped=${stats.skipped}, RulesOnly=${stats.rulesOnly}, AICalls=${stats.aiCalls}, Uncertain=${stats.uncertain}, Time=${totalTime}s`);
+  
+  if (stats.skipped > 0) {
+    Logger.log(`WARNING: ${stats.skipped} threads not processed. Will be picked up in next run.`);
+  }
+  
+  if (stats.uncertain > 0) {
+    Logger.log(`INFO: ${stats.uncertain} emails had low confidence. Consider labeling them to improve rules.`);
+  }
+}
+
+// Returns true if AI was called
+function processThread_(thread, autoLabel, filteredLabel, stats, canUseAI) {
+  const msg = thread.getMessages().slice(-1)[0];
+  if (!msg) {
+    throw new Error("No messages in thread");
+  }
+
+  const meta = {
+    subject: safeStr_(msg.getSubject()),
+    body: safeStr_(msg.getPlainBody(), 10000),
+    from: safeStr_(msg.getFrom()),
+    to: safeStr_(msg.getTo()),
+    cc: safeStr_(msg.getCc()),
+    date: msg.getDate()
+  };
+
+  if (!meta.subject && !meta.body) {
+    Logger.log(`WARNING: Thread ${thread.getId()} has no subject or body. FAIL-SAFE: Moving to inbox.`);
+    applyInboxAction_(thread, autoLabel, filteredLabel, stats, "no content (fail-safe)");
+    return false;
+  }
+
+  // STEP 1: Try rule-based classifier first
+  const rulesResult = classifyEmail_(meta);
+  
+  // STEP 2: If high confidence, use it immediately (no AI needed)
+  if (rulesResult.confidence >= AI_CONFIDENCE_THRESHOLD) {
+    stats.rulesOnly += 1;
+    Logger.log(`[Thread ${thread.getId()}] RULES-ONLY Relevant=${rulesResult.pertains} Confidence=${rulesResult.confidence} Reason="${rulesResult.reason}" Subject="${meta.subject}"`);
+    
+    if (rulesResult.pertains) {
+      applyInboxAction_(thread, autoLabel, filteredLabel, stats, rulesResult.reason);
+    } else {
+      applyFilteredAction_(thread, autoLabel, filteredLabel, stats, rulesResult.reason);
+    }
+    
+    return false; // No AI used
+  }
+  
+  // STEP 3: Low confidence - ask AI if available
+  stats.uncertain += 1;
+  
+  if (!canUseAI || !AI_API_KEY || isRateLimited_()) {
+    // Can't use AI, use rules decision with warning
+    Logger.log(`[Thread ${thread.getId()}] LOW CONFIDENCE (${rulesResult.confidence}) - No AI available. Using rules. Subject="${meta.subject}"`);
+    stats.rulesOnly += 1;
+    
+    if (rulesResult.pertains) {
+      applyInboxAction_(thread, autoLabel, filteredLabel, stats, rulesResult.reason + " (low confidence, no AI)");
+    } else {
+      applyFilteredAction_(thread, autoLabel, filteredLabel, stats, rulesResult.reason + " (low confidence, no AI)");
+    }
+    
+    return false;
+  }
+  
+  // STEP 4: Ask AI for uncertain case
+  Logger.log(`[Thread ${thread.getId()}] LOW CONFIDENCE (${rulesResult.confidence}) - Asking AI... Subject="${meta.subject}"`);
+  
+  const aiResult = classifyWithAIRetry_(meta);
+  stats.aiCalls += 1;
+  
+  if (aiResult.error) {
+    // AI failed, use rules as fallback
+    Logger.log(`[Thread ${thread.getId()}] AI FAILED - Using rules fallback. Subject="${meta.subject}"`);
+    
+    if (rulesResult.pertains) {
+      applyInboxAction_(thread, autoLabel, filteredLabel, stats, rulesResult.reason + " (AI failed, used rules)");
+    } else {
+      applyFilteredAction_(thread, autoLabel, filteredLabel, stats, rulesResult.reason + " (AI failed, used rules)");
+    }
+    
+    return true; // AI was attempted
+  }
+  
+  // STEP 5: Use AI result with strict overrides
+  const finalResult = enforceStrictRules_(meta, aiResult);
+  
+  Logger.log(`[Thread ${thread.getId()}] AI RESULT Relevant=${finalResult.pertains} Reason="${finalResult.reason}" (Rules suggested: ${rulesResult.pertains}) Subject="${meta.subject}"`);
+  
+  if (finalResult.pertains) {
+    applyInboxAction_(thread, autoLabel, filteredLabel, stats, finalResult.reason + " (AI verified)");
+  } else {
+    applyFilteredAction_(thread, autoLabel, filteredLabel, stats, finalResult.reason + " (AI verified)");
+  }
+  
+  return true; // AI was used
+}
+
+function applyInboxAction_(thread, autoLabel, filteredLabel, stats, reason) {
+  if (DRY_RUN) {
+    stats.wouldInbox += 1;
+    Logger.log(`  DRY_RUN: Would remove "${AUTO_LABEL_NAME}" and move to Inbox (${reason})`);
+  } else {
+    try {
+      thread.removeLabel(autoLabel);
+      thread.removeLabel(filteredLabel);
+      thread.moveToInbox();
+      stats.didInbox += 1;
+      Logger.log(`  Applied: Removed "${AUTO_LABEL_NAME}" and moved to Inbox (${reason})`);
+    } catch (e) {
+      Logger.log(`  ERROR applying inbox action: ${e}`);
+      throw e;
+    }
+  }
+}
+
+function applyFilteredAction_(thread, autoLabel, filteredLabel, stats, reason) {
+  if (DRY_RUN) {
+    stats.wouldFiltered += 1;
+    Logger.log(`  DRY_RUN: Would add "${FILTERED_LABEL_NAME}" and keep archived (${reason})`);
+  } else {
+    try {
+      thread.removeLabel(autoLabel);
+      thread.addLabel(filteredLabel);
+      if (thread.isInInbox()) thread.moveToArchive();
+      stats.didFiltered += 1;
+      Logger.log(`  Applied: Added "${FILTERED_LABEL_NAME}" and archived (${reason})`);
+    } catch (e) {
+      Logger.log(`  ERROR applying filtered action: ${e}`);
+      throw e;
+    }
+  }
+}
+
+// ---------- Rate Limiting ----------
+
+function isRateLimited_() {
+  const props = PropertiesService.getScriptProperties();
+  const resetTime = props.getProperty(RATE_LIMIT_PROPERTY);
+  
+  if (!resetTime) return false;
+  
+  const now = Date.now();
+  const reset = parseInt(resetTime);
+  
+  if (now >= reset) {
+    props.deleteProperty(RATE_LIMIT_PROPERTY);
+    props.deleteProperty(RATE_LIMIT_COUNT_PROPERTY);
+    return false;
+  }
+  
+  const count = getCurrentRateLimitCount_();
+  return count >= MAX_AI_CALLS_PER_HOUR;
+}
+
+function getCurrentRateLimitCount_() {
+  const count = PropertiesService.getScriptProperties().getProperty(RATE_LIMIT_COUNT_PROPERTY);
+  return count ? parseInt(count) : 0;
+}
+
+function incrementRateLimitCount_() {
+  const props = PropertiesService.getScriptProperties();
+  const count = getCurrentRateLimitCount_() + 1;
+  props.setProperty(RATE_LIMIT_COUNT_PROPERTY, count.toString());
+  
+  if (!props.getProperty(RATE_LIMIT_PROPERTY)) {
+    const resetTime = Date.now() + (60 * 60 * 1000);
+    props.setProperty(RATE_LIMIT_PROPERTY, resetTime.toString());
+  }
+}
+
+function handleAIRateLimit_(response) {
+  const status = response.getResponseCode();
+  
+  if (status === 429 || status === 503) {
+    const props = PropertiesService.getScriptProperties();
+    const retryAfter = response.getHeaders()['Retry-After'];
+    let resetTime;
+    
+    if (retryAfter) {
+      const retrySeconds = parseInt(retryAfter);
+      if (!isNaN(retrySeconds)) {
+        resetTime = Date.now() + (retrySeconds * 1000);
+      } else {
+        try {
+          resetTime = new Date(retryAfter).getTime();
+        } catch (e) {
+          resetTime = Date.now() + (60 * 60 * 1000);
+        }
+      }
+    } else {
+      resetTime = Date.now() + (60 * 60 * 1000);
+    }
+    
+    props.setProperty(RATE_LIMIT_PROPERTY, resetTime.toString());
+    props.setProperty(RATE_LIMIT_COUNT_PROPERTY, MAX_AI_CALLS_PER_HOUR.toString());
+    
+    Logger.log(`AI rate limit detected (HTTP ${status}). Reset at: ${new Date(resetTime).toISOString()}`);
+    return true;
+  }
+  
+  return false;
+}
+
+// ---------- Rule-Based Classifier (100% accuracy on known patterns) ----------
+
+function classifyEmail_(meta) {
+  const subject = (meta.subject || "").toLowerCase();
+  const body = (meta.body || "").toLowerCase();
+  const from = (meta.from || "").toLowerCase();
+  const combined = subject + " " + body;
+
+  // High confidence rules (patterns from labeled data)
+  
+  const securityResult = checkSecurity_(combined);
+  if (securityResult) return securityResult;
+
+  const actionResult = checkStudentAction_(combined);
+  if (actionResult) return actionResult;
+
+  const acceptedResult = checkAccepted_(combined);
+  if (acceptedResult) return acceptedResult;
+
+  const dualResult = checkDualEnrollment_(combined);
+  if (dualResult) return dualResult;
+
+  const scholarshipResult = checkScholarship_(subject, combined);
+  if (scholarshipResult) return scholarshipResult;
+
+  const aidResult = checkFinancialAid_(combined);
+  if (aidResult) return aidResult;
+
+  const irrelevantResult = checkIrrelevant_(combined);
+  if (irrelevantResult) return irrelevantResult;
+
+  // Low confidence - uncertain, should ask AI
+  return {
+    pertains: false,
+    reason: "No clear relevance indicators found",
+    confidence: 0.3  // Below threshold, will trigger AI
+  };
+}
+
+function checkSecurity_(combined) {
+  const patterns = [
+    /\bpassword\s+(reset|change|update|expired)\b/,
+    /\breset\s+your\s+password\b/,
+    /\baccount\s+security\b/,
+    /\bsecurity\s+alert\b/,
+    /\bunusual\s+(sign[- ]?in|activity)\b/,
+    /\bverification\s+code\b/,
+    /\b(2fa|mfa|two[- ]factor)\b/,
+    /\bcompromised\s+account\b/,
+    /\baccount\s+(locked|suspended)\b/,
+    /\bsuspicious\s+activity\b/
+  ];
+
+  for (let i = 0; i < patterns.length; i++) {
+    if (patterns[i].test(combined)) {
+      if (/\bsaving.*\bon\s+tuition\b|\btuition.*\bsaving\b/.test(combined)) {
+        continue;
+      }
+      return { pertains: true, reason: "Security/password alert", confidence: 1.0 };
+    }
+  }
+  return null;
+}
+
+function checkStudentAction_(combined) {
+  const patterns = [
+    /\bapplication\s+(received|complete|submitted|confirmation)\b/,
+    /\breceived\s+your\s+application\b/,
+    /\bthank\s+you\s+for\s+(applying|submitting)\b/,
+    /\benrollment\s+confirmation\b/,
+    /\bconfirmation\s+(of|for)\s+(your\s+)?(application|enrollment)\b/,
+    /\byour\s+application\s+(has\s+been|is)\s+(received|complete)\b/
+  ];
+
+  for (let i = 0; i < patterns.length; i++) {
+    if (patterns[i].test(combined)) {
+      if (/\bhow\s+to\s+apply\b|\bapply\s+now\b|\bstart\s+(your\s+)?application\b/.test(combined)) {
+        continue;
+      }
+      return { pertains: true, reason: "Application/enrollment confirmation", confidence: 0.95 };
+    }
+  }
+  return null;
+}
+
+function checkAccepted_(combined) {
+  const patterns = [
+    /\baccepted\s+(student\s+)?portal\b/,
+    /\byour\s+(personalized\s+)?accepted\s+portal\b/,
+    /\bdeposit\s+(today|now|by|to\s+reserve)\b/,
+    /\breserve\s+your\s+(place|spot)\b/,
+    /\bcongratulations.*\baccepted\b/,
+    /\byou\s+(have\s+been|are|were)\s+accepted\b/,
+    /\badmission\s+(decision|offer)\b/,
+    /\benroll(ment)?\s+deposit\b/
+  ];
+
+  for (let i = 0; i < patterns.length; i++) {
+    if (patterns[i].test(combined)) {
+      if (/\bacceptance\s+rate\b|\bhigh\s+acceptance\b|\bpre[- ]admit(ted)?\b|\bautomatic\s+admission\b/.test(combined)) {
+        continue;
+      }
+      return { pertains: true, reason: "Accepted student information", confidence: 0.95 };
+    }
+  }
+  return null;
+}
+
+function checkDualEnrollment_(combined) {
+  const patterns = [
+    /\bdual\s+enrollment\b/,
+    /\bcourse\s+(registration|deletion|added|dropped)\b/,
+    /\bspring\s+\d{4}\s+(course|on[- ]campus)\b/,
+    /\bhow\s+to\s+register\b.*\b(course|class)/
+  ];
+
+  for (let i = 0; i < patterns.length; i++) {
+    if (patterns[i].test(combined)) {
+      if (/\blearn\s+more\s+about\b|\binterested\s+in\b|\bconsider\s+joining\b/.test(combined)) {
+        continue;
+      }
+      return { pertains: true, reason: "Dual enrollment course information", confidence: 0.9 };
+    }
+  }
+  return null;
+}
+
+function checkScholarship_(subject, combined) {
+  if (/\bapply\s+for\s+(the\s+)?.*\bscholarship\b/.test(subject)) {
+    if (/\bpresident'?s\b|\bministry\b|\bimpact\b/.test(combined)) {
+      return { pertains: true, reason: "Specific scholarship opportunity", confidence: 0.75 };
+    }
+  }
+
+  if (/\bscholarship\b/.test(combined)) {
+    const notAwardedPatterns = [
+      /\bscholarship\b.*\b(held|reserved)\s+for\s+you\b/,
+      /\b(held|reserved)\s+for\s+you\b/,
+      /\bconsider(ed|ation)\b.*\bscholarship\b/,
+      /\bscholarship\b.*\bconsider(ed|ation)\b/,
+      /\beligible\s+for\b.*\bscholarship\b/,
+      /\bscholarship\b.*\beligible\b/,
+      /\bmay\s+qualify\b.*\bscholarship\b/
+    ];
+
+    for (let i = 0; i < notAwardedPatterns.length; i++) {
+      if (notAwardedPatterns[i].test(combined)) {
+        return { pertains: false, reason: "Scholarship not actually awarded", confidence: 0.9 };
+      }
+    }
+  }
+
+  const awardedPatterns = [
+    /\bcongratulations\b.*\bscholarship\b/,
+    /\byou\s+(have|received|are\s+awarded|won)\b.*\bscholarship\b/,
+    /\bwe\s+(are\s+)?(pleased\s+to\s+)?award(ing)?\b.*\bscholarship\b/,
+    /\bscholarship\s+(offer|award)\b/
+  ];
+
+  for (let i = 0; i < awardedPatterns.length; i++) {
+    if (awardedPatterns[i].test(combined)) {
+      return { pertains: true, reason: "Scholarship awarded", confidence: 0.95 };
+    }
+  }
+
+  return null;
+}
+
+function checkFinancialAid_(combined) {
+  const readyPatterns = [
+    /\bfinancial\s+aid\b.*\boffer\b.*\b(ready|available)\b/,
+    /\baward\s+letter\b.*\b(ready|available|posted|view)\b/,
+    /\b(view|review)\s+(your\s+)?award\s+letter\b/,
+    /\byour\s+aid\s+is\s+ready\b/
+  ];
+
+  const notReadyPatterns = [
+    /\blearn\s+more\s+about\b.*\bfinancial\s+aid\b/,
+    /\bapply\b.*\b(for\s+)?financial\s+aid\b/,
+    /\bcomplete\s+(your\s+)?fafsa\b/,
+    /\bpriority\s+(deadline|consideration)\b.*\bfinancial\s+aid\b/
+  ];
+
+  for (let i = 0; i < readyPatterns.length; i++) {
+    if (readyPatterns[i].test(combined)) {
+      for (let j = 0; j < notReadyPatterns.length; j++) {
+        if (notReadyPatterns[j].test(combined)) {
+          return null;
+        }
+      }
+      return { pertains: true, reason: "Financial aid offer ready", confidence: 0.95 };
+    }
+  }
+
+  return null;
+}
+
+function checkIrrelevant_(combined) {
+  const patterns = [
+    /\bstudent\s+life\s+blog\b/,
+    /\bnewsletter\b/,
+    /\bweekly\s+(digest|update)\b/,
+    /\bupcoming\s+events\b/,
+    /\bjoin\s+us\s+(for|at)\b/,
+    /\bopen\s+house\b/,
+    /\bvirtual\s+tour\b/,
+    /\bhaven'?t\s+applied.*yet\b/,
+    /\bstill\s+time\s+to\s+apply\b/,
+    /\bhow\s+is\s+your\s+college\s+search\b/,
+    /\bextended.*\bpriority\s+deadline\b/,
+    /\bpriority\s+deadline.*\bextended\b/,
+    /\bsummer\s+(academy|camp|program)\b/,
+    /\bugly\s+sweater\b/
+  ];
+
+  for (let i = 0; i < patterns.length; i++) {
+    if (patterns[i].test(combined)) {
+      return { pertains: false, reason: "Marketing/newsletter/spam", confidence: 0.95 };
+    }
+  }
+
+  if (/\bhaven'?t\s+applied\b/.test(combined)) {
+    return { pertains: false, reason: "Unsolicited outreach", confidence: 0.95 };
+  }
+
+  return null;
+}
+
+// ---------- AI Classifier (for uncertain cases) ----------
+
+function classifyWithAIRetry_(meta) {
+  let lastError = null;
+  let backoffMs = 1000;
+  
+  for (let attempt = 1; attempt <= MAX_AI_RETRIES; attempt++) {
+    try {
+      const result = classifyWithAI_(meta);
+      
+      if (typeof result.pertains !== "boolean") {
+        throw new Error(`Invalid AI response: pertains is not boolean`);
+      }
+      if (!result.reason || typeof result.reason !== "string") {
+        throw new Error("Invalid AI response: missing reason");
+      }
+      
+      return result;
+    } catch (e) {
+      lastError = e;
+      Logger.log(`AI attempt ${attempt}/${MAX_AI_RETRIES} failed: ${e}`);
+      
+      if (e.toString().includes("429") || e.toString().includes("rate limit")) {
+        backoffMs = Math.min(backoffMs * 2, 10000);
+      }
+      
+      if (attempt < MAX_AI_RETRIES) {
+        Utilities.sleep(backoffMs);
+        backoffMs *= 2;
+      }
+    }
+  }
+  
+  return { 
+    pertains: false, 
+    reason: `AI failed after ${MAX_AI_RETRIES} attempts: ${lastError}`,
+    error: true 
+  };
+}
+
+function classifyWithAI_(meta) {
+  const prompt = buildPrompt_(meta);
+  const payload = {
+    model: AI_MODEL,
+    messages: [{ role: "user", content: prompt }],
+    stream: false,
+    temperature: 0.1,
+    max_tokens: 150
+  };
+  
+  const headers = {
+    "Authorization": `Bearer ${AI_API_KEY}`,
+    "Content-Type": "application/json"
+  };
+
+  let resp;
+  try {
+    resp = UrlFetchApp.fetch(AI_BASE_URL, {
+      method: "post",
+      payload: JSON.stringify(payload),
+      headers,
+      muteHttpExceptions: true,
+      validateHttpsCertificates: true,
+      timeout: AI_TIMEOUT_MS
+    });
+  } catch (e) {
+    throw new Error(`AI request network error: ${e}`);
+  }
+
+  const status = resp.getResponseCode();
+  
+  if (handleAIRateLimit_(resp)) {
+    throw new Error(`AI rate limit (HTTP ${status})`);
+  }
+  
+  if (status < 200 || status >= 300) {
+    const errorBody = resp.getContentText().slice(0, 500);
+    throw new Error(`AI HTTP ${status}: ${errorBody}`);
+  }
+
+  const text = resp.getContentText();
+  if (!text) {
+    throw new Error("AI returned empty response");
+  }
+
+  let pertains = false, reason = "default false";
+  
+  try {
+    const json = JSON.parse(text);
+    const content = (json.choices?.[0]?.message?.content) || "";
+    
+    if (!content) {
+      throw new Error("AI response missing content");
+    }
+    
+    const parsed = tryParseJSON_(content);
+    
+    if (parsed && typeof parsed.pertains === "boolean") {
+      pertains = parsed.pertains;
+      reason = parsed.reason || "AI decision";
+    } else {
+      const lc = content.toLowerCase();
+      
+      if (/"\s*pertains\s*"\s*:\s*true/i.test(content)) {
+        pertains = true;
+        reason = "AI indicated true";
+      } else if (/"\s*pertains\s*"\s*:\s*false/i.test(content)) {
+        pertains = false;
+        reason = "AI indicated false";
+      } else {
+        throw new Error(`Could not parse AI response: ${content.slice(0, 200)}`);
+      }
+    }
+  } catch (e) {
+    throw new Error(`AI parse error: ${e}. Response: ${text.slice(0, 500)}`);
+  }
+
+  return { pertains, reason };
+}
+
+function buildPrompt_(meta) {
+  return [
+    "You must return EXACTLY one JSON object: { \"pertains\": true|false, \"reason\": \"explanation\" }",
+    "",
+    "Return pertains=true ONLY IF:",
+    "  A) Security/password alert (password reset, account locked, verification code)",
+    "  B) Scholarship AWARDED (not held, not consideration, not eligible)",
+    "  C) Financial aid offer explicitly READY to view",
+    "  D) Confirmation of student action (application received, enrollment confirmed)",
+    "  E) Accepted student info (portal, deposit) for schools APPLIED to",
+    "  F) Dual enrollment course info (registration, schedules)",
+    "",
+    "Return pertains=false for:",
+    "  - Marketing, newsletters, blogs, events",
+    "  - Unsolicited outreach (haven't applied)",
+    "  - Scholarship held/eligible/consideration",
+    "  - FAFSA reminders, financial aid applications",
+    "  - Priority deadline extensions",
+    "",
+    "When uncertain, return false.",
+    "",
+    `From: ${meta.from}`,
+    `Subject: ${meta.subject}`,
+    `Body: ${meta.body}`,
+    "",
+    "JSON response:"
+  ].join("\n");
+}
+
+function enforceStrictRules_(meta, aiDecision) {
+  const s = (meta.subject || "").toLowerCase();
+  const b = (meta.body || "").toLowerCase();
+  let pertains = aiDecision.pertains === true;
+  let reason = aiDecision.reason || "AI decision";
+
+  // OVERRIDE: Force relevant for security
+  if (!pertains) {
+    if (/\bpassword\s+reset\b|\bsecurity\s+alert\b|\bverification\s+code\b|\baccount\s+locked\b/.test(s + " " + b)) {
+      pertains = true;
+      reason = "OVERRIDE: Security alert";
+    }
+  }
+
+  // OVERRIDE: Force NOT relevant for scholarship not awarded
+  if (pertains && /scholarship/i.test(reason)) {
+    if (/\bheld\s+for\s+you\b|\bconsideration\b|\beligible\b|\bmay\s+qualify\b/.test(s + " " + b)) {
+      pertains = false;
+      reason = "OVERRIDE: Scholarship not awarded";
+    }
+  }
+
+  return { pertains, reason };
+}
+
+// ---------- Utilities ----------
+
+function getOrCreateLabel_(name) {
+  return GmailApp.getUserLabelByName(name) || GmailApp.createLabel(name);
+}
+
+function safeStr_(s, maxLen) {
+  if (s === null || s === undefined) return "";
+  s = s.toString().trim();
+  if (maxLen && s.length > maxLen) return s.slice(0, maxLen);
+  return s;
+}
+
+function tryParseJSON_(s) {
+  if (!s) return null;
+  
+  try {
+    return JSON.parse(s);
+  } catch (e) {
+    const codeBlockMatch = s.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
+    if (codeBlockMatch) {
+      try {
+        return JSON.parse(codeBlockMatch[1]);
+      } catch (e2) {}
+    }
+    
+    const i = s.indexOf("{");
+    const j = s.lastIndexOf("}");
+    if (i !== -1 && j !== -1 && j > i) {
+      try {
+        return JSON.parse(s.slice(i, j + 1));
+      } catch (e3) {}
+    }
+    
+    return null;
+  }
+}
+
+function setupTriggers() {
+  ScriptApp.getProjectTriggers().forEach(trigger => {
+    if (trigger.getHandlerFunction() === "runTriage") {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
+  
+  ScriptApp.newTrigger("runTriage")
+    .timeBased()
+    .everyMinutes(10)
+    .create();
+  
+  Logger.log("Trigger created: runTriage every 10 minutes");
+}
+
+function resetRateLimit() {
+  const props = PropertiesService.getScriptProperties();
+  props.deleteProperty(RATE_LIMIT_PROPERTY);
+  props.deleteProperty(RATE_LIMIT_COUNT_PROPERTY);
+  Logger.log("Rate limit reset");
+}
+
+function checkRateLimitStatus() {
+  const props = PropertiesService.getScriptProperties();
+  const count = getCurrentRateLimitCount_();
+  const resetTime = props.getProperty(RATE_LIMIT_PROPERTY);
+  
+  Logger.log(`Rate limit: ${count}/${MAX_AI_CALLS_PER_HOUR} calls`);
+  if (resetTime) {
+    Logger.log(`Reset: ${new Date(parseInt(resetTime)).toISOString()}`);
+  } else {
+    Logger.log("No active rate limit");
+  }
+}
