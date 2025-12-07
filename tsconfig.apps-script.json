@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "ES2015",
+    "module": "none",
+    "lib": ["ES2015"],
+    "noImplicitAny": true,
+    "strict": false,
+    "outDir": "build/compiled",
+    "removeComments": false,
+    "sourceMap": false,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "types": ["google-apps-script"]
+  },
+  "include": ["src/apps-script/**/*.ts"],
+  "exclude": ["node_modules"]
+}

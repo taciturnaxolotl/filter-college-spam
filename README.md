@@ -13,12 +13,11 @@ bun install
 # Run tests
 bun test
 
-# Evaluate classifier
-bun run evaluate
+# Build Google Apps Script
+bun run gas build
 
-# Generate GScript for Gmail
-bun run generate-gscript
-# → Creates build/filter-hybrid.gs
+# Copy build/Code.gs and paste into Apps Script editor
+# https://script.google.com
 ```
 
 ## What Gets Filtered vs Kept
@@ -43,29 +42,48 @@ bun run generate-gscript
 
 ## How It Works
 
-1. **TypeScript Classifier** (`src/classifier.ts`) - Source of truth, rule-based patterns
-2. **GScript Generator** (`src/generate-gscript.ts`) - Converts TS to Apps Script
-3. **Gmail Automation** (`build/filter-hybrid.gs`) - Runs in Gmail every 10 minutes
-
-### Architecture
+**TypeScript → Google Apps Script Pipeline**
 
 ```
-TypeScript Classifier (100% accurate patterns)
+src/apps-script/Code.ts (TypeScript with type safety)
   ↓
-GScript Generator
+  ↓ bun run gas build (compile)
   ↓
-Google Apps Script (build/filter-hybrid.gs)
+build/Code.gs (Google Apps Script)
   ↓
-Gmail Auto-Filtering
+  ↓ Manual copy/paste
+  ↓
+Google Apps Script → Gmail Auto-Filtering
 ```
 
-## Workflow for Improving the Classifier
+## Gmail Deployment
+
+```bash
+# 1. Build
+bun run gas build
+
+# 2. Copy build/Code.gs contents
+
+# 3. Paste into Google Apps Script
+# https://script.google.com
+
+# 4. Also paste scripts/export-from-label.gs
+```
+
+Once deployed:
+1. Set `DRY_RUN = false` in the Apps Script editor
+2. Run `setupTriggers()` to enable auto-filtering every 10 minutes
+3. Run `ensureLabels()` to create required labels
+
+## Development Workflow
+
+### Improving the Classifier
 
 See [docs/WORKFLOW.md](docs/WORKFLOW.md) for detailed instructions.
 
 ```bash
-# 1. Export emails from Gmail (run in Apps Script console)
-exportEmailsToDrive()
+# 1. Export emails from Gmail
+# Run exportEmailsToDrive() in Apps Script console
 
 # 2. Label them interactively
 bun run label new-emails.json
@@ -73,84 +91,101 @@ bun run label new-emails.json
 # 3. Import and evaluate
 bun run import new-emails-labeled.json
 
-# 4. If failures, update src/classifier.ts
+# 4. Update patterns in src/apps-script/Code.ts
 
-# 5. Test and deploy
+# 5. Test locally
 bun test
-bun run generate-gscript
-# Copy build/filter-hybrid.gs to Apps Script
+
+# 6. Build and deploy
+bun run gas build
+# Copy build/Code.gs to Apps Script editor
 ```
+
+### Adding New Patterns
+
+1. Edit `src/apps-script/Code.ts` with type-safe TypeScript
+2. Add tests in `src/classifier.test.ts`
+3. Run `bun test` to verify
+4. Build and deploy: `bun run gas build` then copy to Apps Script
+
+**Note**: Keep `src/classifier.ts` (local testing) and `src/apps-script/Code.ts` (deployed) in sync manually.
 
 ## Project Structure
 
 ```
 src/
-  classifier.ts         - Main classifier logic (TypeScript)
+  apps-script/
+    Code.ts             - Apps Script source (TypeScript)
+    appsscript.json     - Apps Script manifest
+  classifier.ts         - Core classifier (for local testing)
   classifier.test.ts    - Unit tests
-  types.ts             - TypeScript types
-  evaluate.ts          - Evaluation tool
-  generate-gscript.ts  - TS → GScript generator
-  label.ts             - Interactive labeling CLI
-  import-labeled.ts    - Import labeled emails
+  types.ts              - TypeScript types
+  evaluate.ts           - Evaluation tool
+  label.ts              - Interactive labeling CLI
+  import-labeled.ts     - Import labeled emails
+  build-gas.ts          - Build/deploy script
 
 scripts/
-  export-from-label.gs - Export emails from Gmail
+  export-from-label.gs  - Export emails from Gmail
 
-build/                 - Generated files (gitignored)
-  filter-hybrid.gs     - Generated Gmail automation script
+build/                  - Generated (gitignored)
+  Code.gs               - Compiled Apps Script
+  compiled/             - Intermediate JavaScript
 
 data/
-  labeled-emails.json  - Main labeled dataset (58 emails)
-  example-export.json  - Example unlabeled export
+  labeled-emails.json   - Main dataset (58 emails)
+  example-export.json   - Example export
 
-docs/
-  WORKFLOW.md          - Detailed workflow guide
+tsconfig.apps-script.json - TypeScript config for Apps Script
 ```
 
-## Development
-
-### Running Tests
+## Commands
 
 ```bash
-# Unit tests
-bun test
+# Testing & Evaluation
+bun test                - Run unit tests
+bun run evaluate        - Evaluate on labeled dataset
 
-# Full evaluation on labeled dataset
-bun run evaluate
+# Apps Script Deployment
+bun run gas build       - Compile TypeScript → .gs
+
+# Labeling Workflow
+bun run label <file>    - Label emails interactively
+bun run import <file>   - Import labeled emails to dataset
 ```
 
-### Adding New Patterns
+## TypeScript Compilation
 
-1. Update `src/classifier.ts`
-2. Add tests in `src/classifier.test.ts`
-3. Run `bun test` to verify
-4. Run `bun run generate-gscript` to update GScript
-5. Deploy `build/filter-hybrid.gs` to Gmail Apps Script
+Following [Google's official TypeScript guide](https://developers.google.com/apps-script/guides/typescript):
 
-### Metrics
+- **Type safety**: Full `@types/google-apps-script` support
+- **Modern syntax**: ES6+ features (arrow functions, classes, etc.)
+- **Local development**: Edit with VS Code autocomplete
+- **Manual deployment**: Build locally, copy/paste to Apps Script
+- **No bundler overhead**: Simple TypeScript → JavaScript compilation
 
-- **Accuracy**: 100% (58/58 emails)
-- **Precision**: 100% (no false positives)
-- **Recall**: 100% (no false negatives)
+Configuration:
+- `tsconfig.apps-script.json` - Targets ES2015, no modules
+- `src/build-gas.ts` - Build script
+
+## Metrics
+
+- **Accuracy**: 100% (58/58 emails correctly classified)
+- **Precision**: 100% (no false positives - no spam in inbox)
+- **Recall**: 100% (no false negatives - all important emails reach inbox)
 - **F1 Score**: 100%
-
-## Gmail Deployment
-
-1. Run `bun run generate-gscript`
-2. Open [Google Apps Script](https://script.google.com)
-3. Create new project
-4. Copy contents of `build/filter-hybrid.gs`
-5. Copy contents of `scripts/export-from-label.gs` (for exporting emails)
-6. Set `DRY_RUN = false` when ready
-7. Run `setupTriggers()` to enable auto-filtering
-8. Run `ensureLabels()` to create required labels
 
 ## Requirements
 
-- [Bun](https://bun.sh) runtime
+- [Bun](https://bun.sh) - JavaScript runtime
 - Gmail account
-- Google Apps Script (for Gmail automation)
+- Google account for Apps Script
 
 ## License
 
 MIT
+
+## References
+
+- [Google Apps Script TypeScript Guide](https://developers.google.com/apps-script/guides/typescript)
+- [@types/google-apps-script](https://www.npmjs.com/package/@types/google-apps-script)
