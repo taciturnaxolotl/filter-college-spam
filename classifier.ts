@@ -125,6 +125,13 @@ export class EmailClassifier {
         if (/\bacceptance\s+rate\b|\bhigh\s+acceptance\b|\bpre[- ]admit(ted)?\b|\bautomatic\s+admission\b/.test(combined)) {
           return null;
         }
+        // Exclude marketing about future admission decisions
+        if (/\byou\s+will\s+(also\s+)?receive\s+(an?\s+)?(accelerated\s+)?admission\s+decision\b/.test(combined)) {
+          return null;
+        }
+        if (/\breceive\s+an\s+admission\s+decision\s+within\b/.test(combined)) {
+          return null;
+        }
         return {
           pertains: true,
           reason: "Accepted student portal/deposit information",
@@ -296,6 +303,16 @@ export class EmailClassifier {
       /\bhow\s+is\s+your\s+college\s+search\b/,
       /\bstart\s+(your\s+)?college\s+search\b/,
       /\bexplore\s+(our\s+)?(programs|campus)\b/,
+      
+      // Unsolicited outreach patterns
+      /\bi\s+hope\s+you\s+have\s+been\s+receiving\s+my\s+emails\b/,
+      /\bam\s+i\s+reaching\b/,
+      /\byou\s+are\s+on\s+.*\s+(radar|list)\b/,
+      /\bi\s+want\s+to\s+make\s+sure\s+you\s+know\b/,
+      /\byou'?re\s+invited\s+to\s+submit\b/,
+      /\bi'?m\s+eager\s+to\s+consider\s+you\b/,
+      /\bsubmit\s+your\s+.*\s+application\b/,
+      /\bpriority\s+status\b.*\bsubmit.*application\b/,
       
       // Priority deadline extensions (spam)
       /\bextended.*\bpriority\s+deadline\b/,
