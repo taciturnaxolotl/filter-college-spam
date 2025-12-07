@@ -1,6 +1,6 @@
 // Email classifier using rule-based approach learned from labeled data
 
-import type { EmailInput, ClassificationResult } from "./types";
+import type { EmailInput, ClassificationResult } from "./types.ts";
 
 export class EmailClassifier {
   classify(email: EmailInput): ClassificationResult {

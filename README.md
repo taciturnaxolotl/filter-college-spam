@@ -1,145 +1,155 @@
 # College Email Spam Filter
 
-A TypeScript-based email classifier that filters college spam emails with **100% accuracy** on the test dataset.
+Intelligent email classifier that automatically filters college marketing spam while keeping important emails in your inbox.
 
-## Features
+**Current Performance**: 100% accuracy on 58 labeled emails
 
-- **Rule-based classification** learned from manually labeled examples
-- **Comprehensive test suite** with 27 unit tests
-- **100% accuracy** on 56 labeled emails (5 relevant, 51 spam)
-- **Perfect precision and recall** (100% each)
-
-## What Gets Marked as Relevant
-
-The classifier marks emails as relevant when they are:
-
-1. **Security/Account Alerts** - Password resets, account locked, verification codes
-2. **Application Confirmations** - Application received, enrollment confirmed
-3. **Accepted Student Info** - Portal access, deposit reminders (for schools you applied to)
-4. **Dual Enrollment** - Course registration, schedules, deletions
-5. **Actual Scholarship Awards** - When you've actually won a scholarship
-6. **Financial Aid Ready** - Award letters available to review
-7. **Specific Scholarship Opportunities** - Named scholarships for accepted students
-
-## What Gets Filtered
-
-Everything else is marked as spam:
-
-- Marketing newsletters and blog posts
-- Unsolicited outreach from schools you haven't applied to
-- "Priority deadline extended" spam
-- Summer camps and events
-- Scholarship "held for you" / "eligible" / "consideration" emails
-- FAFSA reminders and general financial aid info
-- Campus tours, open houses, etc.
-
-## Installation
+## Quick Start
 
 ```bash
+# Install dependencies
 bun install
-```
 
-## Usage
-
-### Label New Emails
-
-1. Export emails from Gmail to JSON
-2. Run the labeling interface:
-
-```bash
-bun label
-```
-
-3. Open http://localhost:3000 and label emails using keyboard shortcuts:
-   - `Y` - Mark as relevant
-   - `N` - Mark as not relevant
-   - `S` - Skip
-   - `1/2/3` - Set confidence level
-
-### Run Tests
-
-```bash
+# Run tests
 bun test
+
+# Evaluate classifier
+bun run evaluate
+
+# Generate GScript for Gmail
+bun run generate-gscript
+# → Creates build/filter-hybrid.gs
 ```
 
-### Evaluate Performance
+## What Gets Filtered vs Kept
+
+### ✅ Kept in Inbox
+- Security alerts (password resets, account issues)
+- Application confirmations
+- Enrollment confirmations
+- Scholarships actually awarded
+- Financial aid offers ready to view
+- Dual enrollment course information
+- Accepted student portal access
+
+### 🗑️ Filtered Out
+- Marketing emails and newsletters
+- Unsolicited college outreach
+- Application reminders (haven't applied)
+- Scholarship eligibility (not awarded)
+- FAFSA reminders
+- Campus tours and events
+- Deadline extensions
+
+## How It Works
+
+1. **TypeScript Classifier** (`src/classifier.ts`) - Source of truth, rule-based patterns
+2. **GScript Generator** (`src/generate-gscript.ts`) - Converts TS to Apps Script
+3. **Gmail Automation** (`build/filter-hybrid.gs`) - Runs in Gmail every 10 minutes
+
+### Architecture
+
+```
+TypeScript Classifier (100% accurate patterns)
+  ↓
+GScript Generator
+  ↓
+Google Apps Script (build/filter-hybrid.gs)
+  ↓
+Gmail Auto-Filtering
+```
+
+## Workflow for Improving the Classifier
+
+See [docs/WORKFLOW.md](docs/WORKFLOW.md) for detailed instructions.
 
 ```bash
-bun evaluate
-```
+# 1. Export emails from Gmail (run in Apps Script console)
+exportEmailsToDrive()
 
-This runs the classifier on all labeled emails and shows:
-- Accuracy, precision, recall, F1 score
-- False positives and false negatives
-- Detailed failure analysis
+# 2. Label them interactively
+bun run label new-emails.json
 
-### Classify Single Email
+# 3. Import and evaluate
+bun run import new-emails-labeled.json
 
-```typescript
-import { classifyEmail } from "./classifier";
+# 4. If failures, update src/classifier.ts
 
-const result = classifyEmail({
-  subject: "Your Accepted Portal Is Ready",
-  from: "admissions@university.edu",
-  to: "you@example.com",
-  cc: "",
-  body: "Congratulations! Access your personalized portal..."
-});
-
-console.log(result.pertains);  // true
-console.log(result.reason);    // "Accepted student portal/deposit information"
-console.log(result.confidence); // 0.95
-```
-
-## Test Results
-
-```
-Total test cases:     56
-Correct:              56 (100.0%)
-Incorrect:            0
-
-Accuracy:             100.0%
-Precision:            100.0%
-Recall:               100.0%
-F1 Score:             100.0%
+# 5. Test and deploy
+bun test
+bun run generate-gscript
+# Copy build/filter-hybrid.gs to Apps Script
 ```
 
 ## Project Structure
 
 ```
-.
-├── classifier.ts           # Main email classification logic
-├── classifier.test.ts      # Unit tests
-├── evaluate.ts            # Evaluation script
-├── index.ts               # Labeling web interface
-├── types.ts               # Shared TypeScript types
-├── filter.gscript         # Original Google Apps Script (reference)
-├── college_emails_export_2025-12-05_labeled.json  # Labeled training data
-└── test_suite.json        # Exported test cases
+src/
+  classifier.ts         - Main classifier logic (TypeScript)
+  classifier.test.ts    - Unit tests
+  types.ts             - TypeScript types
+  evaluate.ts          - Evaluation tool
+  generate-gscript.ts  - TS → GScript generator
+  label.ts             - Interactive labeling CLI
+  import-labeled.ts    - Import labeled emails
+
+scripts/
+  export-from-label.gs - Export emails from Gmail
+
+build/                 - Generated files (gitignored)
+  filter-hybrid.gs     - Generated Gmail automation script
+
+data/
+  labeled-emails.json  - Main labeled dataset (58 emails)
+  example-export.json  - Example unlabeled export
+
+docs/
+  WORKFLOW.md          - Detailed workflow guide
 ```
 
-## Integration with Google Apps Script
+## Development
 
-The classifier has been ported to Google Apps Script! See `filter-optimized.gscript`.
+### Running Tests
 
-**Migration Guide**: See `MIGRATION_GUIDE.md` for step-by-step instructions.
+```bash
+# Unit tests
+bun test
 
-**Key benefits**:
-- 100% accuracy (same as TypeScript version)
-- No AI API needed (free, unlimited)
-- 20x faster processing
-- Zero rate limits
-- Drop-in replacement for existing script
+# Full evaluation on labeled dataset
+bun run evaluate
+```
 
-## Contributing
+### Adding New Patterns
 
-To improve the classifier:
+1. Update `src/classifier.ts`
+2. Add tests in `src/classifier.test.ts`
+3. Run `bun test` to verify
+4. Run `bun run generate-gscript` to update GScript
+5. Deploy `build/filter-hybrid.gs` to Gmail Apps Script
 
-1. Label more examples using `bun label`
-2. Run `bun evaluate` to check accuracy
-3. Add failing cases to the test suite
-4. Update rules in `classifier.ts`
-5. Re-run tests until 100% accuracy
+### Metrics
+
+- **Accuracy**: 100% (58/58 emails)
+- **Precision**: 100% (no false positives)
+- **Recall**: 100% (no false negatives)
+- **F1 Score**: 100%
+
+## Gmail Deployment
+
+1. Run `bun run generate-gscript`
+2. Open [Google Apps Script](https://script.google.com)
+3. Create new project
+4. Copy contents of `build/filter-hybrid.gs`
+5. Copy contents of `scripts/export-from-label.gs` (for exporting emails)
+6. Set `DRY_RUN = false` when ready
+7. Run `setupTriggers()` to enable auto-filtering
+8. Run `ensureLabels()` to create required labels
+
+## Requirements
+
+- [Bun](https://bun.sh) runtime
+- Gmail account
+- Google Apps Script (for Gmail automation)
 
 ## License
 

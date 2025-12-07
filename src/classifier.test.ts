@@ -1,6 +1,6 @@
 import { describe, test, expect } from "bun:test";
-import { EmailClassifier } from "./classifier";
-import type { EmailInput } from "./types";
+import { EmailClassifier } from "./classifier.ts";
+import type { EmailInput } from "./types.ts";
 
 const classifier = new EmailClassifier();
 

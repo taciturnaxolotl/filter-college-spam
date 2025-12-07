@@ -4,7 +4,7 @@
 import { readFile, writeFile } from "fs/promises";
 
 // Read the classifier
-const classifierSrc = await readFile("classifier.ts", "utf-8");
+const classifierSrc = await readFile("src/classifier.ts", "utf-8");
 
 // Extract patterns from each rule function
 const extractPatterns = (functionName: string): string[] => {
@@ -190,7 +190,6 @@ function classifyEmailTS(meta) {
 }
 `.trim();
 
-await writeFile("filter_generated.gscript", gscript);
-console.log("✅ Generated filter_generated.gscript");
-console.log("   Copy the classifyEmailTS() function into your Google Apps Script");
-console.log("   and call it instead of classifyWithAI_() for offline classification");
+await writeFile("build/filter-hybrid.gs", gscript);
+console.log("✅ Generated build/filter-hybrid.gs");
+console.log("   Deploy this file to Google Apps Script");

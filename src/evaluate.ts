@@ -2,8 +2,8 @@
 // Evaluate classifier performance against labeled test data
 
 import { readFile } from "fs/promises";
-import { EmailClassifier } from "./classifier";
-import type { LabeledEmail, TestCase, TestResult, ClassificationResult } from "./types";
+import { EmailClassifier } from "./classifier.ts";
+import type { LabeledEmail, TestCase, TestResult, ClassificationResult } from "./types.ts";
 
 interface LabeledData {
   source_file: string;
@@ -17,7 +17,8 @@ async function evaluate() {
   console.log("📊 Evaluating Email Classifier\n");
 
   // Load labeled data
-  const labeledFile = "college_emails_export_2025-12-05_labeled.json";
+  const args = process.argv.slice(2);
+  const labeledFile = args[0] || "data/labeled-emails.json";
   const data: LabeledData = JSON.parse(await readFile(labeledFile, "utf-8"));
   
   // Filter to only labeled emails
