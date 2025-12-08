@@ -132,6 +132,18 @@ export class EmailClassifier {
         if (/\breceive\s+an\s+admission\s+decision\s+within\b/.test(combined)) {
           return null;
         }
+        // Exclude "Priority Student" spam that asks to submit application
+        if (/\bpriority\s+student\b.*\bsubmit.*application\b|\bsubmit.*\bpriority\s+student\s+application\b/.test(combined)) {
+          return null;
+        }
+        // Exclude if asking to submit ANY application (not accepted yet)
+        if (/\bif\s+you\s+haven'?t\s+yet\s+done\s+so.*submit\b|\bsubmit\s+the\b.*\bapplication\b/.test(combined)) {
+          return null;
+        }
+        // Exclude "reserve your spot" for events/webinars (not enrollment)
+        if (/\breserve\s+your\s+spot\b/.test(combined) && /\b(virtual|webinar|event|program|zoom|session)\b/.test(combined)) {
+          return null;
+        }
         return {
           pertains: true,
           reason: "Accepted student portal/deposit information",
@@ -291,7 +303,7 @@ export class EmailClassifier {
       
       // Marketing events
       /\bupcoming\s+events\b/,
-      /\bjoin\s+us\s+(for|at)\b/,
+      /\bjoin\s+us\s+(for|at|on\s+zoom)\b/,
       /\bopen\s+house\b/,
       /\bvirtual\s+tour\b/,
       /\bcampus\s+(visit|tour|event)\b/,
@@ -325,6 +337,11 @@ export class EmailClassifier {
       // Ugly sweaters and other fluff
       /\bugly\s+sweater\b/,
       /\bit'?s\s+.+\s+season\b/,
+      
+      // FAFSA/scholarship info sessions (not actual aid offers)
+      /\bjoin\s+us.*\b(virtual\s+program|zoom)\b.*\b(scholarship|financial\s+aid)\b/,
+      /\blearn\s+more\b.*\b(scholarship|financial\s+aid)\s+(opportunities|options)\b/,
+      /\b(scholarship|financial\s+aid)\s+(opportunities|options)\b.*\blearn\s+more\b/,
     ];
 
     for (const pattern of irrelevantPatterns) {

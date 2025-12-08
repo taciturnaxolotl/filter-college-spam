@@ -2,7 +2,7 @@
 
 Intelligent email classifier that automatically filters college marketing spam while keeping important emails in your inbox.
 
-**Current Performance**: 100% accuracy on 58 labeled emails
+**Current Performance**: 100% accuracy on 63 labeled emails
 
 ## Quick Start
 
@@ -45,16 +45,22 @@ bun run gas build
 **TypeScript → Google Apps Script Pipeline**
 
 ```
-src/apps-script/Code.ts (TypeScript with type safety)
+src/classifier.ts (Core classification logic - single source of truth)
   ↓
-  ↓ bun run gas build (compile)
+  ↓ imported by
   ↓
-build/Code.gs (Google Apps Script)
+src/apps-script/wrapper.ts (Apps Script wrapper)
+  ↓
+  ↓ bun run gas (bundle with esbuild)
+  ↓
+build/Code.gs (Single-file Google Apps Script)
   ↓
   ↓ Manual copy/paste
   ↓
 Google Apps Script → Gmail Auto-Filtering
 ```
+
+**Key Improvement**: The classifier logic is now shared between local testing and Apps Script deployment. No more manual syncing!
 
 ## Gmail Deployment
 
@@ -91,7 +97,7 @@ bun run label new-emails.json
 # 3. Import and evaluate
 bun run import new-emails-labeled.json
 
-# 4. Update patterns in src/apps-script/Code.ts
+# 4. Update patterns in src/classifier.ts
 
 # 5. Test locally
 bun test
@@ -103,37 +109,38 @@ bun run gas build
 
 ### Adding New Patterns
 
-1. Edit `src/apps-script/Code.ts` with type-safe TypeScript
+1. Edit `src/classifier.ts` - the single source of truth
 2. Add tests in `src/classifier.test.ts`
 3. Run `bun test` to verify
 4. Build and deploy: `bun run gas build` then copy to Apps Script
 
-**Note**: Keep `src/classifier.ts` (local testing) and `src/apps-script/Code.ts` (deployed) in sync manually.
+**Note**: The Apps Script is automatically bundled from `src/classifier.ts` via `src/apps-script/wrapper.ts`
 
 ## Project Structure
 
 ```
 src/
   apps-script/
-    Code.ts             - Apps Script source (TypeScript)
-    appsscript.json     - Apps Script manifest
-  classifier.ts         - Core classifier (for local testing)
+    wrapper.ts            - Apps Script wrapper (imports classifier)
+    Code.ts               - DEPRECATED (see wrapper.ts)
+    appsscript.json       - Apps Script manifest
+  classifier.ts         - Core classifier (SINGLE SOURCE OF TRUTH)
   classifier.test.ts    - Unit tests
   types.ts              - TypeScript types
   evaluate.ts           - Evaluation tool
   label.ts              - Interactive labeling CLI
   import-labeled.ts     - Import labeled emails
-  build-gas.ts          - Build/deploy script
+  build-gas.ts          - Build/deploy script (uses esbuild)
 
 scripts/
   export-from-label.gs  - Export emails from Gmail
 
 build/                  - Generated (gitignored)
-  Code.gs               - Compiled Apps Script
-  compiled/             - Intermediate JavaScript
+  Code.gs               - Bundled Apps Script
+  bundled.js            - Intermediate bundle
 
 data/
-  labeled-emails.json   - Main dataset (58 emails)
+  labeled-emails.json   - Main dataset (63 emails)
   example-export.json   - Example export
 
 tsconfig.apps-script.json - TypeScript config for Apps Script
@@ -162,15 +169,16 @@ Following [Google's official TypeScript guide](https://developers.google.com/app
 - **Modern syntax**: ES6+ features (arrow functions, classes, etc.)
 - **Local development**: Edit with VS Code autocomplete
 - **Manual deployment**: Build locally, copy/paste to Apps Script
-- **No bundler overhead**: Simple TypeScript → JavaScript compilation
+- **Bundling**: esbuild bundles classifier + wrapper into single file
+- **Single source of truth**: `src/classifier.ts` used by both local tests and Apps Script
 
 Configuration:
-- `tsconfig.apps-script.json` - Targets ES2015, no modules
-- `src/build-gas.ts` - Build script
+- `src/build-gas.ts` - Build script with esbuild bundler
+- `src/apps-script/wrapper.ts` - Apps Script wrapper that imports classifier
 
 ## Metrics
 
-- **Accuracy**: 100% (58/58 emails correctly classified)
+- **Accuracy**: 100% (63/63 emails correctly classified)
 - **Precision**: 100% (no false positives - no spam in inbox)
 - **Recall**: 100% (no false negatives - all important emails reach inbox)
 - **F1 Score**: 100%
