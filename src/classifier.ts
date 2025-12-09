@@ -4,9 +4,19 @@ import type { EmailInput, ClassificationResult } from "./types.ts";
 
 export class EmailClassifier {
   classify(email: EmailInput): ClassificationResult {
-    const subject = email.subject.toLowerCase();
-    const body = email.body.toLowerCase();
-    const from = email.from.toLowerCase();
+    // Defensive checks for Apps Script environment
+    if (!email || typeof email !== 'object') {
+      return {
+        pertains: false,
+        reason: "Invalid email object",
+        confidence: 0.0,
+        matched_rules: ["invalid_input"]
+      };
+    }
+
+    const subject = (email.subject || '').toLowerCase();
+    const body = (email.body || '').toLowerCase();
+    const from = (email.from || '').toLowerCase();
     const combined = `${subject} ${body}`;
 
     // CRITICAL RULES: Always relevant (security, passwords, account issues)
@@ -142,6 +152,13 @@ export class EmailClassifier {
         }
         // Exclude "reserve your spot" for events/webinars (not enrollment)
         if (/\breserve\s+your\s+spot\b/.test(combined) && /\b(virtual|webinar|event|program|zoom|session)\b/.test(combined)) {
+          return null;
+        }
+        // Exclude "top candidate" spam asking to apply/start application
+        if (/\btop\s+candidate\b.*\b(apply|start.*application|submit.*application)\b/.test(combined)) {
+          return null;
+        }
+        if (/\binvite\s+you\s+to\s+apply\b/.test(combined)) {
           return null;
         }
         return {
@@ -320,11 +337,14 @@ export class EmailClassifier {
       /\bi\s+hope\s+you\s+have\s+been\s+receiving\s+my\s+emails\b/,
       /\bam\s+i\s+reaching\b/,
       /\byou\s+are\s+on\s+.*\s+(radar|list)\b/,
+      /\byou'?re\s+on\s+(our|my)\s+radar\b/,
       /\bi\s+want\s+to\s+make\s+sure\s+you\s+know\b/,
       /\byou'?re\s+invited\s+to\s+submit\b/,
       /\bi'?m\s+eager\s+to\s+consider\s+you\b/,
       /\bsubmit\s+your\s+.*\s+application\b/,
       /\bpriority\s+status\b.*\bsubmit.*application\b/,
+      /\btop\s+candidate\b.*\binvite\s+you\s+to\s+apply\b/,
+      /\binvite\s+you\s+to\s+apply\b/,
       
       // Priority deadline extensions (spam)
       /\bextended.*\bpriority\s+deadline\b/,
