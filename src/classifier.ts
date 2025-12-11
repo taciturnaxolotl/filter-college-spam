@@ -135,6 +135,10 @@ export class EmailClassifier {
         if (/\bacceptance\s+rate\b|\bhigh\s+acceptance\b|\bpre[- ]admit(ted)?\b|\bautomatic\s+admission\b/.test(combined)) {
           return null;
         }
+        // Exclude "direct admit/admission" marketing that asks to complete profile
+        if (/\bdirect\s+(admit(ted)?|admission)\b.*\b(complete|submit).*\bprofile\b|\b(complete|submit).*\bprofile\b.*\bdirect\s+(admit(ted)?|admission)\b/.test(combined)) {
+          return null;
+        }
         // Exclude marketing about future admission decisions
         if (/\byou\s+will\s+(also\s+)?receive\s+(an?\s+)?(accelerated\s+)?admission\s+decision\b/.test(combined)) {
           return null;
