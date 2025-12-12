@@ -151,7 +151,11 @@ export class EmailClassifier {
           return null;
         }
         // Exclude if asking to submit ANY application (not accepted yet)
-        if (/\bif\s+you\s+haven'?t\s+yet\s+done\s+so.*submit\b|\bsubmit\s+the\b.*\bapplication\b/.test(combined)) {
+        if (/\bsubmit\s+(your\s+)?(the\s+)?application\b/.test(combined)) {
+          return null;
+        }
+        // Exclude "once you are accepted" - means they're not accepted yet
+        if (/\bonce\s+you\s+(are|have\s+been)\s+accepted\b/.test(combined)) {
           return null;
         }
         // Exclude "reserve your spot" for events/webinars (not enrollment)
@@ -163,6 +167,17 @@ export class EmailClassifier {
           return null;
         }
         if (/\binvite\s+you\s+to\s+apply\b/.test(combined)) {
+          return null;
+        }
+        // Exclude application deadline marketing (Early Decision/Action, priority deadlines, etc.)
+        if (/\b(early\s+(decision|action)|priority)\b.*\b(deadline|apply|application)\b.*\b(approaching|by|extended)\b/.test(combined)) {
+          return null;
+        }
+        if (/\bapply\s+(by|now|right\s+away|today)\b|\bdeadline.*\b(december|january|february|march)\b/.test(combined)) {
+          return null;
+        }
+        // Exclude "Panther Priority Application" and similar marketing
+        if (/\bpanther\s+priority\s+application\b|\bpriority\s+application\b/.test(combined)) {
           return null;
         }
         return {
@@ -231,6 +246,10 @@ export class EmailClassifier {
       /\bmay\s+qualify\b.*\bscholarship\b/,
       /\bguaranteed\s+admission\b/,
       /\bpriority\s+consideration\b/,
+      // Scholarship events/days (attend to get scholarship = not awarded)
+      /\b(attend|register\s+for).*\bscholarship\s+(day|event|award\s+event)\b/,
+      /\bscholarship\s+(day|event).*\b(attend|register)\b/,
+      /\bsoar\s+(scholarship\s+award\s+)?event\b/,
     ];
 
     // Check if scholarship is mentioned but not awarded
