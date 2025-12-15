@@ -180,6 +180,26 @@ export class EmailClassifier {
         if (/\bpanther\s+priority\s+application\b|\bpriority\s+application\b/.test(combined)) {
           return null;
         }
+        // Exclude "deadline details" marketing spam
+        if (/\bdeadline\s+details\b|\byour\s+deadline\b/.test(combined)) {
+          return null;
+        }
+        // Exclude "application deadline will be" (future deadline announcements)
+        if (/\bapplication\s+deadline\s+will\s+be\b/.test(combined)) {
+          return null;
+        }
+        // Exclude "flip these pages" and similar exploratory marketing
+        if (/\bflip\s+these\s+pages\b|\blearn\s+more\s+about\s+being\b/.test(combined)) {
+          return null;
+        }
+        // Exclude "want to make sure you're ready" deadline pressure
+        if (/\b(want|wanted)\s+to\s+make\s+sure\s+you'?re\s+ready\b/.test(combined)) {
+          return null;
+        }
+        // Exclude "we're interested in you" with apply language
+        if (/\bwe'?re\s+interested\s+in\s+you\b/.test(combined) && /\bapply\b/.test(combined)) {
+          return null;
+        }
         return {
           pertains: true,
           reason: "Accepted student portal/deposit information",
@@ -250,6 +270,12 @@ export class EmailClassifier {
       /\b(attend|register\s+for).*\bscholarship\s+(day|event|award\s+event)\b/,
       /\bscholarship\s+(day|event).*\b(attend|register)\b/,
       /\bsoar\s+(scholarship\s+award\s+)?event\b/,
+      // Direct admission/scholarship forms to submit (not awarded yet)
+      /\bdirect\s+admission\b.*\bscholarship\s+form\b/,
+      /\bscholarship\s+form\b.*\bdirect\s+admission\b/,
+      /\bsubmit\s+(your\s+)?.*\bscholarship\s+form\b/,
+      // "Want to make sure you're ready" deadline pressure with scholarship mention
+      /\b(want|wanted)\s+to\s+make\s+sure\s+you'?re\s+ready\b.*\bscholarship\b/,
     ];
 
     // Check if scholarship is mentioned but not awarded
