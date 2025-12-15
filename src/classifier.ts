@@ -200,6 +200,10 @@ export class EmailClassifier {
         if (/\bwe'?re\s+interested\s+in\s+you\b/.test(combined) && /\bapply\b/.test(combined)) {
           return null;
         }
+        // Exclude "you have until midnight/tonight to apply" deadline pressure
+        if (/\byou\s+have\s+until\b.*\b(midnight|tonight|today)\b.*\bto\s+apply\b/.test(combined)) {
+          return null;
+        }
         return {
           pertains: true,
           reason: "Accepted student portal/deposit information",
@@ -276,6 +280,10 @@ export class EmailClassifier {
       /\bsubmit\s+(your\s+)?.*\bscholarship\s+form\b/,
       // "Want to make sure you're ready" deadline pressure with scholarship mention
       /\b(want|wanted)\s+to\s+make\s+sure\s+you'?re\s+ready\b.*\bscholarship\b/,
+      // Scholarship estimate (not actual award)
+      /\bscholarship\s+estimate\b/,
+      /\byou\s+have\s+not\s+(yet\s+)?seen\s+your.*\bscholarship\b/,
+      /\bacademic\s+scholarship\s+estimate\b/,
     ];
 
     // Check if scholarship is mentioned but not awarded
