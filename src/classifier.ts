@@ -204,6 +204,22 @@ export class EmailClassifier {
         if (/\byou\s+have\s+until\b.*\b(midnight|tonight|today)\b.*\bto\s+apply\b/.test(combined)) {
           return null;
         }
+        // Exclude "I'm giving you until midnight/tonight" deadline extensions
+        if (/\bgiving\s+you\s+until\b.*\b(midnight|tonight|today)\b.*\bto\s+apply\b/.test(combined)) {
+          return null;
+        }
+        // Exclude "apply by the [month] deadline" marketing
+        if (/\bapply\s+by\s+the\s+(january|february|march|april|may|june|july|august|september|october|november|december)\b.*\bdeadline\b/.test(combined)) {
+          return null;
+        }
+        // Exclude fee waiver deadline pressure
+        if (/\bfee\s+waiver\b.*\b(ends|today|tonight|last\s+day)\b|\b(today|tonight).*\blast\s+day\s+for.*\bfee\s+waiver\b/.test(combined)) {
+          return null;
+        }
+        // Exclude "complete your application" with perks/benefits (priority status, no essay, etc.)
+        if (/\bcomplete\s+your\s+application\b.*\b(priority|perks|benefits|no\s+application\s+fee|no\s+essay)\b/.test(combined)) {
+          return null;
+        }
         return {
           pertains: true,
           reason: "Accepted student portal/deposit information",
