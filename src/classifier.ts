@@ -23,6 +23,10 @@ export class EmailClassifier {
     const securityResult = this.checkSecurity(subject, body, combined);
     if (securityResult) return securityResult;
 
+    // RESPONSE TO STUDENT OUTREACH: Replies to emails the student sent
+    const outreachResult = this.checkStudentOutreach(subject, body, combined);
+    if (outreachResult) return outreachResult;
+
     // RESPONSE TO STUDENT ACTION: Application confirmations, enrollment confirmations
     const actionResult = this.checkStudentAction(subject, body, combined);
     if (actionResult) return actionResult;
@@ -54,6 +58,32 @@ export class EmailClassifier {
       confidence: 0.3,
       matched_rules: ["default_not_relevant"]
     };
+  }
+
+  private checkStudentOutreach(subject: string, body: string, combined: string): ClassificationResult | null {
+    // Check if this is a reply to an email the student sent
+    const isReply = /^re:/i.test(subject.trim());
+    if (!isReply) return null;
+
+    const responsePatterns = [
+      /\bthank\s+you\s+for\s+reaching\s+out\b/,
+      /\bthanks\s+for\s+reaching\s+out\b/,
+      /\bthank\s+you\s+for\s+(your\s+)?(email|inquiry|question|interest)\b/,
+      /\bin\s+response\s+to\s+your\s+(email|inquiry|question)\b/,
+    ];
+
+    for (const pattern of responsePatterns) {
+      if (pattern.test(combined)) {
+        return {
+          pertains: true,
+          reason: "Reply to student's outreach email",
+          confidence: 0.95,
+          matched_rules: ["student_outreach_reply"]
+        };
+      }
+    }
+
+    return null;
   }
 
   private checkSecurity(subject: string, body: string, combined: string): ClassificationResult | null {
@@ -103,6 +133,14 @@ export class EmailClassifier {
       if (pattern.test(combined)) {
         // But exclude if it's just marketing about "how to apply"
         if (/\bhow\s+to\s+apply\b|\bapply\s+now\b|\bstart\s+(your\s+)?application\b/.test(combined)) {
+          return null;
+        }
+        // Exclude "haven't received your application" or "we haven't received" (outreach)
+        if (/\bhaven'?t\s+received\s+your\s+application\b|\bwe\s+haven'?t\s+received\b/.test(combined)) {
+          return null;
+        }
+        // Exclude "before you apply" or "help with before you apply" (outreach)
+        if (/\bbefore\s+you\s+apply\b/.test(combined)) {
           return null;
         }
         return {
@@ -220,6 +258,18 @@ export class EmailClassifier {
         if (/\bcomplete\s+your\s+application\b.*\b(priority|perks|benefits|no\s+application\s+fee|no\s+essay)\b/.test(combined)) {
           return null;
         }
+        // Exclude "apply for free" or "waiving your fee" marketing
+        if (/\bapply\s+for\s+free\b|\bwaiving\s+your.*\bfee\b|\bwe'?re\s+waiving\s+your\b/.test(combined)) {
+          return null;
+        }
+        // Exclude "apply and enroll" combined deadline marketing
+        if (/\bapply\s+and\s+enroll\b.*\bfree\b/.test(combined)) {
+          return null;
+        }
+        // Exclude "haven't received your application" or "we haven't received" (outreach)
+        if (/\bhaven'?t\s+received\s+your\s+application\b|\bwe\s+haven'?t\s+received\b/.test(combined)) {
+          return null;
+        }
         return {
           pertains: true,
           reason: "Accepted student portal/deposit information",
@@ -247,6 +297,10 @@ export class EmailClassifier {
         // Dual enrollment is relevant if it's about actual courses, not marketing
         if (/\blearn\s+more\s+about\b|\binterested\s+in\b|\bconsider\s+joining\b/.test(combined)) {
           return null; // Just marketing
+        }
+        // Exclude general "explore your academic interests" marketing
+        if (/\bfreedom\s+to\s+explore\b.*\bacademic\s+interests\b|\bmajors,?\s+minors\s+and\s+more\b/.test(combined)) {
+          return null;
         }
         return {
           pertains: true,
@@ -300,6 +354,12 @@ export class EmailClassifier {
       /\bscholarship\s+estimate\b/,
       /\byou\s+have\s+not\s+(yet\s+)?seen\s+your.*\bscholarship\b/,
       /\bacademic\s+scholarship\s+estimate\b/,
+      // "You've earned a scholarship" but says "pre-admission" (not actually awarded)
+      /\bpre[- ]admission\b/,
+      // Scholarship deadline approaching (apply for it, not awarded)
+      /\bscholarship\s+deadline\s+(approaching|soon)\b/,
+      // "upon admission" means not awarded yet
+      /\bscholarship\b.*\bupon\s+admission\b|\bupon\s+admission\b.*\bscholarship\b/,
     ];
 
     // Check if scholarship is mentioned but not awarded
